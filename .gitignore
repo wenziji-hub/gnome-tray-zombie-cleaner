@@ -1,0 +1,13 @@
+# 编译/打包产物
+*.zip
+build/
+dist/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*~
+.DS_Store
+
+# 本地测试残留
+*.log

@@ -1,0 +1,7 @@
+{
+  "uuid": "tray-zombie-cleaner@local",
+  "name": "Tray Zombie Cleaner",
+  "description": "自动清理托盘里的僵尸图标：程序已经退出/重新注册，但托盘桥（ubuntu-appindicators）没有把旧图标摘掉，导致同一个图标重复出现。做法是定期把'注册表里已不存在'的图标销毁——只杀孤儿，绝不碰正常图标。",
+  "shell-version": ["42"],
+  "version": 1
+}
