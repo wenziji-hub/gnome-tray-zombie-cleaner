@@ -4,9 +4,20 @@
 >
 > Automatically removes *zombie* tray icons that Ubuntu's AppIndicator bridge leaves behind when an app exits without unregistering its icon.
 
-![before / after](docs/before-after.png)
+### 典型现象
 
-*上：修复前，托盘里同一个图标出现两次（两个橙猫）。下：清理后只剩一个。*
+托盘里**同一个程序的图标并排出现两次**，而其中**一个所属的进程其实早就退出了**。
+例如 Clash Verge 的猫头图标出现两个、其中一个点了没反应；或者某个程序明明已经退出，托盘里还留着它的图标。
+
+清理扩展工作时的日志长这样：
+
+```
+$ journalctl --user -f | grep tray-cleaner
+[tray-cleaner] 已启用：每 8 秒检查一次僵尸托盘图标（连续 2 次确认才清理）
+[tray-cleaner] 清理僵尸托盘图标: :1.722/org/ayatana/NotificationItem/tray_icon_tray_app_clash_verge_rev_tray
+```
+
+> 本仓库不放实拍截图（避免暴露作者桌面内容）。现象与上面的描述一致：**图标重复、多出来的那个是僵尸**。
 
 适用于 **Ubuntu 22.04 LTS / GNOME Shell 42**。
 
@@ -14,7 +25,7 @@
 
 ## 问题现象
 
-- 托盘中**同一个程序的图标出现两次**（截图里的两只猫 = Clash Verge 的托盘图标）
+- 托盘中**同一个程序的图标出现两次**（现实中常见的例子：Clash Verge 的猫头图标并排两个）
 - 或者**程序明明已经退出**，托盘里还留着它的图标
 - 手动「重启 GNOME Shell」或「重载托盘扩展」能修好，**但过一阵又会出现**
 
