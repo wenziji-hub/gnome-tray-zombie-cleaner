@@ -194,6 +194,11 @@ kill -TERM $(systemctl --user show org.gnome.Shell@x11.service -p MainPID --valu
 
 ## 5. 调试本扩展
 
+仓库里的 `tools/` 提供了可复现的验证工具：`fake-sni.js` 能造出三类僵尸图标（含上游 FIXME 那种
+"对象没了、连接还在"的场景），`zombie-focus-test.py` 是端到端验证脚本——预期 20 秒识别、25 秒销毁。
+详见 [`tools/README.md`](../tools/README.md)。
+
+
 扩展里的日志前缀是 `[tray-cleaner]`：
 
 | 日志 | 含义 |
