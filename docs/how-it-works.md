@@ -113,33 +113,49 @@ function enable() {
 | 注册表当前有哪些条目 | D-Bus 属性 `org.kde.StatusNotifierWatcher.RegisteredStatusNotifierItems`（`as`） |
 | 面板上有哪些托盘图标 | `Main.panel.statusArea` 里键名以 `appindicator-` 开头的项 |
 | 图标对应的条目 id | 就是键名去掉前缀（`indicatorStatusIcon.js` 里 `addToStatusArea('appindicator-' + this.uniqueId, ...)`） |
+| 老式图标是否还活着 | id 形如 `legacy:<窗口类>:<pid>`，直接查 `/proc/<pid>` |
+| SNI 图标对象是否还存在 | 异步读一次该条目的 `org.kde.StatusNotifierItem.Id` 属性 |
 
 面板键名与注册表 id 用的是**同一个字符串**（busName + objectPath，例如
 `:1.722/org/ayatana/NotificationItem/tray_icon_tray_app_clash_verge_rev_tray`），
 所以可以直接集合比较。
+
+### 3.1.1 两个必须绕开的坑
+
+| 坑 | 后果 | 绕法 |
+|---|---|---|
+| 注册表服务由 `ubuntu-appindicators` **在 gnome-shell 进程内**提供 | 用同步 `call_sync` 查它会自锁（主循环被堵住，回复发不出来），每次都超时 | 全程异步 `call()`
+ + `Gio.DBusProxy` 属性缓存（缓存随 `PropertiesChanged` 自动更新） |
+| 本扩展的 `enable()` 早于注册表服务抢占 D-Bus 名字 | 此时建立的代理缓存永远是 `null`，每轮都静默跳过 = 从不清理 | 缓存为空 → 重建代理重试；再不行 → 发异步刷新，下一轮生效 |
 
 ### 3.2 判定流程
 
 ```
 每 8 秒：
   reg   = 注册表 id 集合
-  面板上所有 SNI 图标（跳过 legacy: 前缀）
+  面板上所有托盘图标（appindicator- 前缀）
 
   对每个图标：
-      在 reg 里        → 正常，清除它的"可疑计数"
-      不在 reg 里      → 可疑计数 +1
-      可疑计数 ≥ 2     → 确认为孤儿，加入待清理列表
+      legacy:<窗口类>:<pid>            → 看 /proc/<pid>；不存在 → 可疑计数 +1
+      不在 reg 里                      → 可疑计数 +1
+      在 reg 里，但异步探测回答
+        "没这个对象/没这个服务"         → 可疑计数 +1（上游 FIXME 的场景）
+      其余（含探测结果还没回来、
+        超时等不确定情况）              → 当作活着，清除可疑计数
 
-  待清理列表为空       → 什么都不做（绝大多数时候如此）
-  待清理列表 ≥ 2 个    → 只报告、不动手（保险丝 3）
-  待清理列表 = 1 个    → destroy() 掉它，并从 statusArea 里删键
+  可疑计数 ≥ 2（约 16 秒）             → 确认为僵尸，加入待清理列表
+
+  待清理列表为空                       → 什么都不做（绝大多数时候如此）
+  待清理列表 > 3 个                    → 只报告、不动手（保险丝 3）
+  否则                                 → destroy() 掉它，并从 statusArea 里删键
 ```
 
 ### 3.3 为什么这样是安全的
 
 - **只读**：本扩展不往注册表里写任何东西，不改变任何程序的注册状态
 - **可逆**：销毁的是一个已经没人引用的控件；即使判断错了，用户重启那个程序即可恢复
-- **失败安全**：三道保险丝让「规则失效」时的行为退化成「什么都不做」，而不是「乱杀」
+- **失败安全**：三道保险丝让「规则失效」时的行为退化成「什么都不做」，而不是「乱杀」；
+  任何探测结果不确定（超时、异常）都按"活着"处理
 
 ---
 
