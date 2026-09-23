@@ -2,6 +2,21 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.1] - 2026-09-24
+
+扩展代码本身**无改动**（`metadata.json` 版本不变，v1.1.0 用户无需更新），只改脚本与文档。
+
+### 新增
+- `install.sh --check`：比较 `extension.js` 的修改时间与当前 Shell 的启动时间，
+  判断"正在跑的到底是不是磁盘上这一版"，需要重启时给出确切命令
+
+### 文档 / 脚本
+- `install.sh` 检测到「覆盖安装」时会明确警告：**`gnome-extensions disable/enable`
+  不会重载 `.js`（GJS 模块缓存），必须重启 Shell** —— 这是"装了新版却没变化"的头号原因，
+  也是本项目作者亲自踩过的坑
+- `--restart` 完成后自动复查一次，确认新代码真的跑起来了
+- README 增加「更新」章节
+
 ## [1.1.0] - 2026-09-24
 
 一次「照着日志查了一晚上」的修复：1.0.0 实际上**从来没有生效过**。

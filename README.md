@@ -130,6 +130,31 @@ cd gnome-tray-zombie-cleaner
 kill -TERM $(systemctl --user show org.gnome.Shell@x11.service -p MainPID --value)
 ```
 
+## 更新
+
+```bash
+git pull
+./install.sh           # 覆盖安装
+./install.sh --check   # 只判断：正在跑的到底是不是磁盘上这一版
+```
+
+⚠️ **更新代码后必须重启 Shell**：GJS 会缓存扩展的 JS，`gnome-extensions disable/enable`
+**不会**重新加载新的 `.js`，只复制文件同样不生效。
+
+这个坑本项目作者亲自踩过：改完代码、disable/enable 之后，加的探针一行日志都没打出来 ——
+因为跑的始终是旧代码。后来才确认必须重启 Shell。
+
+```bash
+# X11：单独重启 Shell，不丢窗口
+kill -TERM $(systemctl --user show org.gnome.Shell@x11.service -p MainPID --value)
+
+# 或者一步到位：装 + 重启 + 复查
+./install.sh --restart
+```
+
+`./install.sh --check` 的原理很简单：比较 `extension.js` 的修改时间与 Shell 的启动时间 ——
+文件比 Shell 新，就说明正在跑的是旧版本。
+
 ## 验证它在工作
 
 ```bash

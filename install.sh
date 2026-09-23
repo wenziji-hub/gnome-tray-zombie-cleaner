@@ -3,12 +3,57 @@
 #
 #   ./install.sh              安装并启用（不重启 Shell）
 #   ./install.sh --restart    安装后顺便重启 GNOME Shell（X11 专用，不丢窗口）
+#   ./install.sh --check      只检查：磁盘上的代码是不是比正在运行的 Shell 更新
 #
 set -euo pipefail
 
 UUID="tray-zombie-cleaner@local"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="${HOME}/.local/share/gnome-shell/extensions/${UUID}"
+SHELL_UNIT="org.gnome.Shell@x11.service"
+
+shell_start_epoch() {
+    local ts
+    ts="$(systemctl --user show "${SHELL_UNIT}" -p ExecMainStartTimestamp --value 2>/dev/null || true)"
+    [ -n "${ts}" ] || return 1
+    date -d "${ts}" +%s 2>/dev/null
+}
+
+# 磁盘上的 extension.js 比 Shell 启动还新 → 说明正在运行的还是旧代码
+check() {
+    if [ ! -f "${DEST_DIR}/extension.js" ]; then
+        echo "未安装到 ${DEST_DIR}"
+        return 0
+    fi
+
+    local mtime start
+    mtime="$(stat -c %Y "${DEST_DIR}/extension.js")"
+    if ! start="$(shell_start_epoch)"; then
+        echo "不是 X11 会话（找不到 ${SHELL_UNIT}）→ 请注销重新登录来加载代码。"
+        return 0
+    fi
+
+    echo "磁盘上的 extension.js 修改于: $(date -d "@${mtime}" '+%F %T')"
+    echo "当前 Shell 启动于:            $(date -d "@${start}" '+%F %T')"
+    if [ "${mtime}" -gt "${start}" ]; then
+        echo
+        echo "⚠️  代码比 Shell 新 —— 正在跑的仍是旧版本。"
+        echo "    注意：gnome-extensions disable/enable 不会重载 .js（GJS 有模块缓存），"
+        echo "    必须重启 Shell 才会生效："
+        echo "      kill -TERM \$(systemctl --user show ${SHELL_UNIT} -p MainPID --value)"
+    else
+        echo
+        echo "✅ 正在运行的已是磁盘上的版本，无需重启。"
+    fi
+}
+
+if [[ "${1:-}" == "--check" ]]; then
+    check
+    exit 0
+fi
+
+UPDATING=0
+[ -f "${DEST_DIR}/extension.js" ] && UPDATING=1
 
 echo "==> 安装到 ${DEST_DIR}"
 mkdir -p "${DEST_DIR}"
@@ -17,7 +62,7 @@ install -m 0644 "${SRC_DIR}/metadata.json" "${DEST_DIR}/metadata.json"
 install -m 0644 "${SRC_DIR}/LICENSE" "${DEST_DIR}/LICENSE" 2>/dev/null || true
 
 echo "==> 加入启用列表"
-CURRENT="$(gsettings get org.gnome.shell enabled-extensions)"
+CURRENT="$(gsettings get org.gnome.Shell enabled-extensions)"
 if [[ "${CURRENT}" == *"${UUID}"* ]]; then
     echo "    已经在启用列表里了"
 else
@@ -34,14 +79,21 @@ if uuid not in items:
 print("[" + ", ".join("'%s'" % i for i in items) + "]")
 PY
 )"
-    gsettings set org.gnome.shell enabled-extensions "${NEW}"
+    gsettings set org.gnome.Shell enabled-extensions "${NEW}"
     echo "    已追加: ${UUID}"
 fi
 
 echo
-echo "==> 完成。接下来："
+if [[ "${UPDATING}" == "1" ]]; then
+    echo "==> 这是覆盖更新 —— 请注意："
+    echo "    GJS 会缓存扩展代码，'gnome-extensions disable/enable' **不会**重新加载新的 .js，"
+    echo "    只复制文件也不会生效。必须重启 Shell（或注销重登）才会跑上新代码。"
+    echo "    判断当前是否需要重启：  ./install.sh --check"
+    echo
+fi
+echo "==> 接下来："
 echo "    X11 会话下可以单独重启 Shell（不丢窗口）："
-echo "      kill -TERM \$(systemctl --user show org.gnome.Shell@x11.service -p MainPID --value)"
+echo "      kill -TERM \$(systemctl --user show ${SHELL_UNIT} -p MainPID --value)"
 echo "    Wayland 会话下需要注销重新登录。"
 echo
 echo "    验证是否在工作："
@@ -50,12 +102,14 @@ echo "      journalctl --user -f | grep tray-cleaner"
 if [[ "${1:-}" == "--restart" ]]; then
     echo
     echo "==> 重启 GNOME Shell …"
-    PID="$(systemctl --user show org.gnome.Shell@x11.service -p MainPID --value 2>/dev/null || true)"
+    PID="$(systemctl --user show "${SHELL_UNIT}" -p MainPID --value 2>/dev/null || true)"
     if [[ -z "${PID}" ]]; then
-        echo "    找不到 org.gnome.Shell@x11.service —— 你可能是 Wayland 会话，请注销重登。"
+        echo "    找不到 ${SHELL_UNIT} —— 你可能是 Wayland 会话，请注销重登。"
     else
         kill -TERM "${PID}"
         sleep 12
-        echo "    新 Shell PID: $(systemctl --user show org.gnome.Shell@x11.service -p MainPID --value)"
+        echo "    新 Shell PID: $(systemctl --user show "${SHELL_UNIT}" -p MainPID --value)"
+        echo
+        check
     fi
 fi
