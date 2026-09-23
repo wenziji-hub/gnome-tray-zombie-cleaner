@@ -5,21 +5,6 @@
 // 适用于 Ubuntu 22.04 LTS / GNOME Shell 42。
 // 原理与排查过程见 docs/how-it-works.md。
 //
-// 托盘僵尸图标自动清理
-//
-// 问题根源（已经从 ubuntu-appindicators 源码里核实）：
-//   * statusNotifierWatcher.js 里上游自己留了 FIXME：
-//       "_itemVanished: this is useless if the path name disappears while the bus stays alive"
-//     → 程序重新注册托盘图标时，旧的那一个不会被摘掉，于是同一个图标出现两次。
-//   * 上游的补救是 util.js 的 tryCleanupOldIndicators()，但它把面板上【所有】托盘图标
-//     都销毁（靠随后重新注册恢复），所以只能在扩展启动时跑一次。
-//
-// 这个扩展做的是"精准版"：
-//   每 4 秒对照托盘注册表（org.kde.StatusNotifierWatcher 的 RegisteredStatusNotifierItems），
-//   找出面板上【注册表里已经没有】的托盘图标；连续两次（约 8 秒）都判定为孤儿，才销毁它。
-//   → 正常图标（在注册表里的）永远不动，僵尸图标最多 8 秒内被清掉。
-//
-// 安全性：只读注册表（不写任何东西）；只销毁孤儿控件；任何异常都被吞掉，不影响 Shell。
 
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
