@@ -13,10 +13,14 @@ DEST_DIR="${HOME}/.local/share/gnome-shell/extensions/${UUID}"
 SHELL_UNIT="org.gnome.Shell@x11.service"
 
 shell_start_epoch() {
-    local ts
-    ts="$(systemctl --user show "${SHELL_UNIT}" -p ExecMainStartTimestamp --value 2>/dev/null || true)"
-    [ -n "${ts}" ] || return 1
-    date -d "${ts}" +%s 2>/dev/null
+    # ExecMainStartTimestamp 在这个模板服务上可能保留旧值（Shell 自动重启后
+    # 尤其明显）。以当前 MainPID 对应的进程启动时间为准，避免误报“仍在运行旧代码”。
+    local pid started
+    pid="$(systemctl --user show "${SHELL_UNIT}" -p MainPID --value 2>/dev/null || true)"
+    [[ "${pid}" =~ ^[0-9]+$ && "${pid}" != "0" ]] || return 1
+    started="$(ps -p "${pid}" -o lstart= 2>/dev/null || true)"
+    [ -n "${started}" ] || return 1
+    date -d "${started}" +%s 2>/dev/null
 }
 
 # 磁盘上的 extension.js 比 Shell 启动还新 → 说明正在运行的还是旧代码
@@ -114,7 +118,8 @@ if [[ "${1:-}" == "--restart" ]]; then
         for _ in {1..24}; do
             sleep 0.5
             candidate="$(systemctl --user show "${SHELL_UNIT}" -p MainPID --value 2>/dev/null || true)"
-            if [[ -n "${candidate}" && "${candidate}" != "${PID}" && "${candidate}" != "0" ]]; then
+            comm="$(ps -p "${candidate}" -o comm= 2>/dev/null | tr -d '[:space:]' || true)"
+            if [[ -n "${candidate}" && "${candidate}" != "${PID}" && "${candidate}" != "0" && "${comm}" == "gnome-shell" ]]; then
                 new_pid="${candidate}"
                 break
             fi
