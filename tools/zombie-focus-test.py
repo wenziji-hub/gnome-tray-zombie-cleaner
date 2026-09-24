@@ -6,6 +6,10 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+FAKE_SNI = ROOT / 'tools' / 'fake-sni.js'
 
 ENV = dict(os.environ)
 ENV.update({'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus',
@@ -49,7 +53,7 @@ def main():
 
     tag = time.strftime('%H:%M:%S')
     log = open('/tmp/f9.log', 'w')
-    subprocess.Popen(['setsid', 'gjs', '/home/wenziji/dsh-workspace/fake-sni.js', '--unexport'],
+    subprocess.Popen(['setsid', 'gjs', str(FAKE_SNI), '--unexport'],
                      env=ENV, stdout=log, stderr=log, start_new_session=True)
     print('启动假 SNI（t=0 注册，t=6s 撤掉对象）时间戳 %s' % tag)
 

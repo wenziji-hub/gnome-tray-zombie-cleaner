@@ -88,6 +88,29 @@ function enable() {
 | 注册表里还在、对象已经没了 | 程序撤掉/换掉了对象路径，但连接还活着（上游 FIXME 的场景） |
 | 老式 XEmbed 图标、进程已死 | `legacy:` id 里的 pid 在 `/proc` 里不存在 |
 
+## 美化桌面兼容模式：处理 SNI + XEmbed 双入口
+
+Dash to Panel、主题和面板布局扩展会重新挂载 `statusArea`，因此更容易把一个程序
+同时提供的两种托盘入口都显示出来：现代 StatusNotifierItem（SNI）和旧式 XEmbed。
+这时两个图标都可能属于同一个仍在运行的进程，不能按“图标一样”、PID 或数量直接
+删除，否则会误伤有意提供多个托盘入口的程序。
+
+当前版本增加了一个独立的、可逆的去重阶段：
+
+1. 用 D-Bus `GetConnectionUnixProcessID` 把 SNI 总线连接映射到进程 PID；
+2. 异步读取 SNI 的 `Id`、`Title`、`IconName`；
+3. 将它与 XEmbed 的 `legacy:<wm_class>:<pid>` 比较；
+4. 只有 **同一 PID + 文本身份有重叠 + 连续两轮确认** 时，才暂时隐藏旧式图标；
+5. 证据消失或扩展停用时恢复原来的可见状态。
+
+去重只隐藏面板控件，不注销应用的 D-Bus 注册，也不杀进程。网络、权限、D-Bus
+超时等不确定情况都会保持原状。要关闭这项行为，把 `extension.js` 中的
+`DEDUPE_ENABLED` 改为 `false`，然后按“更新”章节重启 GNOME Shell。
+
+这项兼容模式只能减少“同一程序双协议同时显示”的暴露，不能修复应用重复注册对象
+路径，也不能替代 `ubuntu-appindicators` 的上游生命周期补丁。遇到两个图标时，先看
+日志确认它们分别是 SNI 还是 XEmbed，再决定是否把问题修到应用端。
+
 ## 两个把作者坑了很久的细节
 
 写这个扩展时踩到的坑，值得单独记下来：

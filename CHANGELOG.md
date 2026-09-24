@@ -2,6 +2,11 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## Unreleased
+
+- 在美化面板下增加保守的 SNI/XEmbed 双入口去重：通过 D-Bus PID 与图标语义进行匹配，连续两轮确认后只隐藏旧式重复入口，证据消失或扩展停用会恢复。
+- 去重与僵尸回收分离，异步执行，不按 PID 或图标数量单独删除。
+
 ## [1.1.1] - 2026-09-24
 
 扩展代码本身**无改动**（`metadata.json` 版本不变，v1.1.0 用户无需更新），只改脚本与文档。

@@ -43,6 +43,12 @@ const STRIKES = 2;                // 连续确认几次才动手（2 次 ≈ 16 
 const MAX_ORPHANS_PER_CYCLE = 3;  // 一轮超过这个数量 → 视为可疑，只报告不动手
 const HEARTBEAT_MS = 600000;      // 状态没变化时，至少每 10 分钟证明自己还活着
 const PROBE_TTL_MS = 60000;       // 探测结果的有效期
+// 同一程序同时注册 SNI 与旧式 XEmbed 时，原生 Ubuntu 往往只留下一个可见入口。
+// 这里采用保守的“语义匹配”：必须是同一 PID，且窗口类与 SNI 的 Id/Title 有
+// 明确重叠；只满足其中一项不会隐藏任何图标。
+const DEDUPE_ENABLED = true;
+const DEDUPE_STRIKES = 2;
+const DEDUPE_TTL_MS = 60000;
 const MAX_LOG = 60;
 
 let _timerId = 0;
@@ -50,7 +56,11 @@ let _proxy = null;
 let _asyncItems = null;
 let _asyncAt = 0;
 let _probe = new Map();           // uid -> { alive: bool, at: ms }
+let _pidProbe = new Map();        // bus name -> { pid: number, at: ms }
+let _metaProbe = new Map();       // uid -> { id, title, iconName, at: ms }
 let _strikes = new Map();
+let _dedupeStrikes = new Map();   // legacy uid -> number of duplicate confirmations
+let _hiddenDuplicates = new Map();// legacy uid -> {container, parent, index}
 let _noticed = new Set();
 let _cleaned = 0;
 let _logCount = 0;
@@ -164,22 +174,199 @@ function _probeItem(uid) {
     } catch (e) { /* 忽略 */ }
 
     try {
+        // GetAll 一次带回 Id/Title/IconName，既能判定对象是否存在，也为
+        // SNI + XEmbed 的安全去重提供语义证据。调用全程异步，避免卡住 Shell。
         Gio.DBus.session.call(
-            bus, path, 'org.freedesktop.DBus.Properties', 'Get',
-            new GLib.Variant('(ss)', [ITEM_IFACE, 'Id']),
-            new GLib.VariantType('(v)'), Gio.DBusCallFlags.NONE, 3000, null,
+            bus, path, 'org.freedesktop.DBus.Properties', 'GetAll',
+            new GLib.Variant('(s)', [ITEM_IFACE]),
+            new GLib.VariantType('(a{sv})'), Gio.DBusCallFlags.NONE, 3000, null,
             (conn, res) => {
                 let alive = true;
+                let props = {};
                 try {
-                    conn.call_finish(res);
+                    const unpacked = conn.call_finish(res).deep_unpack();
+                    props = unpacked && unpacked[0] ? unpacked[0] : {};
                 } catch (e) {
-                    // 只有明确回答"没这个对象/没这个服务"才算死
+                    // 只有明确回答“对象/服务不存在”才算死；超时等不确定情况按活着处理。
                     if (/UnknownObject|UnknownMethod|UnknownInterface|UnknownProperty|ServiceUnknown|NameHasNoOwner|NoSuchObject/i.test(String(e)))
                         alive = false;
                 }
                 _probe.set(uid, { alive: alive, at: _now() });
+                if (alive)
+                    _metaProbe.set(uid, {
+                        id: _variantString(props.Id),
+                        title: _variantString(props.Title),
+                        iconName: _variantString(props.IconName),
+                        at: _now(),
+                    });
             });
     } catch (e) { /* 忽略 */ }
+}
+
+function _variantString(value) {
+    try {
+        if (value && typeof value.deep_unpack === 'function')
+            value = value.deep_unpack();
+        return value === null || value === undefined ? '' : String(value);
+    } catch (e) {
+        return '';
+    }
+}
+
+function _probeConnectionPid(bus) {
+    const cached = _pidProbe.get(bus);
+    if (cached && _now() - cached.at < DEDUPE_TTL_MS)
+        return;
+
+    try {
+        Gio.DBus.session.call(
+            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+            'GetConnectionUnixProcessID', new GLib.Variant('(s)', [bus]),
+            new GLib.VariantType('(u)'), Gio.DBusCallFlags.NONE, 3000, null,
+            (conn, res) => {
+                try {
+                    const value = conn.call_finish(res).deep_unpack();
+                    _pidProbe.set(bus, { pid: Number(value[0]), at: _now() });
+                } catch (e) {
+                    // 连接消失或权限不足时不做去重判断，避免误删。
+                    _pidProbe.delete(bus);
+                }
+            });
+    } catch (e) { /* 忽略 */ }
+}
+
+function _legacyInfo(uid) {
+    if (!uid.startsWith(LEGACY_PREFIX))
+        return null;
+    const rest = uid.slice(LEGACY_PREFIX.length);
+    const pos = rest.lastIndexOf(':');
+    if (pos <= 0)
+        return null;
+    const pid = Number.parseInt(rest.slice(pos + 1), 10);
+    return pid > 0 ? { wmClass: rest.slice(0, pos), pid: pid } : null;
+}
+
+function _sniParts(uid) {
+    const slash = uid.indexOf('/');
+    if (slash <= 0)
+        return null;
+    return { bus: uid.slice(0, slash), path: uid.slice(slash) };
+}
+
+function _tokens(value) {
+    const ignored = new Set(['tray', 'icon', 'app', 'status', 'item', 'notification', 'indicator']);
+    return new Set((String(value || '').toLowerCase().match(/[a-z0-9]+/g) || [])
+        .filter(t => t.length >= 4 && !ignored.has(t)));
+}
+
+function _sameTrayIdentity(legacy, meta) {
+    if (!legacy || !meta)
+        return false;
+    const left = _tokens(legacy.wmClass);
+    const right = new Set([..._tokens(meta.id), ..._tokens(meta.title), ..._tokens(meta.iconName)]);
+    for (const token of left) {
+        if (right.has(token))
+            return true;
+    }
+    return false;
+}
+
+// 只隐藏“同一 PID + 明确同一身份”的旧式图标，保留现代 SNI 图标。
+// 隐藏而不是 destroy，应用重建或判定变化时可以无损恢复。
+function _dedupeCompatibleIcons(area) {
+    if (!DEDUPE_ENABLED)
+        return;
+
+    const keys = Object.keys(area).filter(k => k.startsWith(KEY_PREFIX));
+    const legacyKeys = keys.filter(k => k.slice(KEY_PREFIX.length).startsWith(LEGACY_PREFIX));
+    const sniKeys = keys.filter(k => !k.slice(KEY_PREFIX.length).startsWith(LEGACY_PREFIX));
+    const matched = new Set();
+
+    for (const key of sniKeys) {
+        const uid = key.slice(KEY_PREFIX.length);
+        const parts = _sniParts(uid);
+        if (!parts)
+            continue;
+        _probeConnectionPid(parts.bus);
+    }
+
+    for (const legacyKey of legacyKeys) {
+        const legacyUid = legacyKey.slice(KEY_PREFIX.length);
+        const legacy = _legacyInfo(legacyUid);
+        if (!legacy)
+            continue;
+
+        let duplicate = false;
+        let evidenceReady = false;
+        for (const sniKey of sniKeys) {
+            const sniUid = sniKey.slice(KEY_PREFIX.length);
+            const parts = _sniParts(sniUid);
+            const pid = parts && _pidProbe.get(parts.bus);
+            const meta = _metaProbe.get(sniUid);
+            if (!parts || !pid || !meta || _now() - meta.at >= DEDUPE_TTL_MS)
+                continue;
+            evidenceReady = true;
+            if (pid.pid === legacy.pid && _sameTrayIdentity(legacy, meta)) {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (duplicate) {
+            matched.add(legacyUid);
+            const count = (_dedupeStrikes.get(legacyUid) || 0) + 1;
+            _dedupeStrikes.set(legacyUid, count);
+            if (count >= DEDUPE_STRIKES) {
+                const icon = area[legacyKey];
+                if (icon && !_hiddenDuplicates.has(legacyUid)) {
+                    // Main.panel.statusArea 保存的是 Button；真正占据面板布局的是
+                    // Button.container。临时移出父容器才能避免留下一个空白槽位。
+                    // 不 destroy，后续证据消失时按原索引放回。
+                    const container = icon.container || icon;
+                    const parent = container.get_parent ? container.get_parent() : null;
+                    if (!parent)
+                        continue;
+                    const index = parent.get_children().indexOf(container);
+                    _hiddenDuplicates.set(legacyUid, { container, parent, index });
+                    parent.remove_child(container);
+                    _log('隐藏同一程序的重复旧式托盘图标: ' + legacyUid);
+                }
+            }
+        } else if (evidenceReady) {
+            _dedupeStrikes.delete(legacyUid);
+            const icon = area[legacyKey];
+            const previous = _hiddenDuplicates.get(legacyUid);
+            if (previous && icon && previous.parent) {
+                const currentParent = previous.container.get_parent ? previous.container.get_parent() : null;
+                if (!currentParent) {
+                    const children = previous.parent.get_children();
+                    const index = Math.max(0, Math.min(previous.index, children.length));
+                    previous.parent.insert_child_at_index(previous.container, index);
+                }
+                _hiddenDuplicates.delete(legacyUid);
+                _log('重复证据消失，恢复旧式托盘图标: ' + legacyUid);
+            }
+        }
+    }
+
+    for (const uid of Array.from(_dedupeStrikes.keys())) {
+        if (!matched.has(uid) && !legacyKeys.some(k => k.slice(KEY_PREFIX.length) === uid))
+            _dedupeStrikes.delete(uid);
+    }
+}
+
+function _restoreHiddenDuplicates() {
+    for (const [uid, state] of _hiddenDuplicates) {
+        try {
+            const currentParent = state.container.get_parent ? state.container.get_parent() : null;
+            if (!currentParent && state.parent) {
+                const children = state.parent.get_children();
+                const index = Math.max(0, Math.min(state.index, children.length));
+                state.parent.insert_child_at_index(state.container, index);
+            }
+        } catch (e) { /* 图标可能已由托盘扩展销毁 */ }
+    }
+    _hiddenDuplicates.clear();
 }
 
 function _legacyPid(uid) {
@@ -288,6 +475,14 @@ function _check() {
             orphans.push([key, uid, why]);
     }
 
+    // 美化面板可能同时暴露同一程序的 SNI 与 XEmbed 两个入口；完成存活判定后
+    // 再做独立的、可逆的语义去重。它不会参与僵尸清理，也不会按“同 PID”单独删除。
+    try {
+        _dedupeCompatibleIcons(area);
+    } catch (e) {
+        _log('去重检查异常，保持图标不变: ' + e);
+    }
+
     // 心跳：状态变了就打印，或每 10 分钟证明存活
     const state = reg.set.size + '|' + snKeys.length + '|' + orphans.length;
     if (state !== _lastState || _now() - _lastBeat > HEARTBEAT_MS) {
@@ -334,7 +529,11 @@ function init() {
         enable() {
             _strikes = new Map();
             _probe = new Map();
+            _pidProbe = new Map();
+            _metaProbe = new Map();
             _noticed = new Set();
+            _dedupeStrikes = new Map();
+            _hiddenDuplicates = new Map();
             _cleaned = 0;
             _logCount = 0;
             _lastState = '';
@@ -371,9 +570,14 @@ function init() {
                 GLib.source_remove(_timerId);
                 _timerId = 0;
             }
+            _restoreHiddenDuplicates();
             _proxy = null;
             _strikes = new Map();
             _probe = new Map();
+            _pidProbe = new Map();
+            _metaProbe = new Map();
+            _dedupeStrikes = new Map();
+            _hiddenDuplicates = new Map();
             log('[tray-cleaner] 已停用（共清理 ' + _cleaned + ' 个僵尸图标）');
         },
     };

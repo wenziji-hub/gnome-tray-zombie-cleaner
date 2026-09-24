@@ -62,7 +62,7 @@ install -m 0644 "${SRC_DIR}/metadata.json" "${DEST_DIR}/metadata.json"
 install -m 0644 "${SRC_DIR}/LICENSE" "${DEST_DIR}/LICENSE" 2>/dev/null || true
 
 echo "==> 加入启用列表"
-CURRENT="$(gsettings get org.gnome.Shell enabled-extensions)"
+CURRENT="$(gsettings get org.gnome.shell enabled-extensions)"
 if [[ "${CURRENT}" == *"${UUID}"* ]]; then
     echo "    已经在启用列表里了"
 else
@@ -79,7 +79,7 @@ if uuid not in items:
 print("[" + ", ".join("'%s'" % i for i in items) + "]")
 PY
 )"
-    gsettings set org.gnome.Shell enabled-extensions "${NEW}"
+    gsettings set org.gnome.shell enabled-extensions "${NEW}"
     echo "    已追加: ${UUID}"
 fi
 
@@ -106,9 +106,27 @@ if [[ "${1:-}" == "--restart" ]]; then
     if [[ -z "${PID}" ]]; then
         echo "    找不到 ${SHELL_UNIT} —— 你可能是 Wayland 会话，请注销重登。"
     else
-        kill -TERM "${PID}"
-        sleep 12
-        echo "    新 Shell PID: $(systemctl --user show "${SHELL_UNIT}" -p MainPID --value)"
+        # systemd 的 stop/restart 会等待 Shell 的 D-Bus 清理钩子，某些扩展卡住时
+        # 会让安装终端一直没有返回。发送 TERM 后只轮询 PID，超过上限就退出并给出
+        # 可执行的后续命令；安装本身已经完成，不把终端锁死。
+        kill -TERM "${PID}" 2>/dev/null || true
+        new_pid=""
+        for _ in {1..24}; do
+            sleep 0.5
+            candidate="$(systemctl --user show "${SHELL_UNIT}" -p MainPID --value 2>/dev/null || true)"
+            if [[ -n "${candidate}" && "${candidate}" != "${PID}" && "${candidate}" != "0" ]]; then
+                new_pid="${candidate}"
+                break
+            fi
+        done
+        if [[ -n "${new_pid}" ]]; then
+            echo "    新 Shell PID: ${new_pid}"
+        else
+            echo "    Shell 未在 12 秒内报告新 PID；当前代码已安装。"
+            echo "    若仍未加载，请注销并重新登录，或稍后手动执行："
+            echo "      kill -TERM \$(systemctl --user show ${SHELL_UNIT} -p MainPID --value)"
+            exit 0
+        fi
         echo
         check
     fi
