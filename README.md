@@ -111,6 +111,51 @@ Dash to Panel、主题和面板布局扩展会重新挂载 `statusArea`，因此
 路径，也不能替代 `ubuntu-appindicators` 的上游生命周期补丁。遇到两个图标时，先看
 日志确认它们分别是 SNI 还是 XEmbed，再决定是否把问题修到应用端。
 
+## 挂起/解锁卡顿：已知的独立问题
+
+托盘图标清理和挂起恢复不是同一个根因。Ubuntu 22.04、GNOME Shell 42、Intel
+Alder Lake `i915` + NVIDIA 混合显卡的日志可能同时出现三类问题：
+
+1. `/usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf` 把
+   `InhibitDelayMaxSec` 提高到 30 秒。GNOME Shell 为了锁屏持有 sleep inhibitor，
+   因此挂起前可能固定等待约 30 秒。
+2. 从 `s2idle` 恢复时，`i915` 可能报告 Type-C PHY timeout；同时 USB 或 NVMe
+   可能重新枚举。这属于内核、固件或硬件恢复路径，不是托盘清理器能修的。
+3. AppIndicators 在锁屏进出时可能销毁旧 watcher，但异步注册仍继续访问旧 D-Bus
+   proxy，产生 `this._proxy is undefined`、`disposed Gio.DBusProxy` 和未处理 Promise。
+
+本仓库提供两个可回滚的辅助脚本：
+
+```bash
+# 关闭没有指纹设备时的探测，并把锁屏延迟上限恢复为 5 秒
+./tools/configure-suspend.sh apply
+
+# 修复 AppIndicators 的异步生命周期竞态（会备份 /usr/share 下的原文件）
+./tools/patch-appindicators.sh apply
+```
+
+应用第二个脚本后，必须重启 X11 下的 GNOME Shell 或注销重新登录：
+
+```bash
+./install.sh --restart
+```
+
+脚本的回滚命令分别是 `configure-suspend.sh restore` 和
+`patch-appindicators.sh restore`。发行版更新 `ubuntu-appindicators` 后，系统文件
+可能被覆盖；再次运行补丁脚本即可检查并重新应用。补丁只阻止已销毁的异步注册创建
+图标，不会修改 D-Bus 协议，也不会杀掉应用进程。
+
+如果修复后解锁画面仍卡顿，先单独验证内核睡眠路径，不要同时改其他变量：
+
+```bash
+cat /sys/power/mem_sleep        # 当前通常是 [s2idle] deep
+sudo sh -c 'echo deep > /sys/power/mem_sleep'  # 仅本次开机，重启后恢复
+```
+
+若 `deep` 明显改善，再考虑持久化 `mem_sleep_default=deep`；同时检查 BIOS、内核、
+NVIDIA 驱动，以及 USB-C/DP 外接设备。`i915` 的 PHY timeout、NVMe DMAR 和 USB
+`error -71` 应以 `journalctl -k -b` 单独验证，不能把它们误判为托盘僵尸。
+
 ## 两个把作者坑了很久的细节
 
 写这个扩展时踩到的坑，值得单独记下来：

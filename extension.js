@@ -52,6 +52,9 @@ const DEDUPE_TTL_MS = 60000;
 const MAX_LOG = 60;
 
 let _timerId = 0;
+let _sleeping = false;
+let _resumeNotBefore = 0;
+let _sleepSubscription = 0;
 let _proxy = null;
 let _asyncItems = null;
 let _asyncAt = 0;
@@ -407,6 +410,9 @@ function _whyNotHealthy(uid, reg) {
 // ── 主循环 ──────────────────────────────────────────────
 
 function _check() {
+    if (_sleeping || _now() < _resumeNotBefore)
+        return;
+
     const reg = _registry();
     if (!reg)
         return;
@@ -527,6 +533,9 @@ function _check() {
 function init() {
     return {
         enable() {
+            _sleeping = false;
+            _resumeNotBefore = 0;
+            _sleepSubscription = 0;
             _strikes = new Map();
             _probe = new Map();
             _pidProbe = new Map();
@@ -546,6 +555,33 @@ function init() {
             _asyncAt = 0;
 
             _createProxy();
+
+            try {
+                _sleepSubscription = Gio.DBus.system.signal_subscribe(
+                    'org.freedesktop.login1',
+                    'org.freedesktop.login1.Manager',
+                    'PrepareForSleep',
+                    '/org/freedesktop/login1',
+                    null,
+                    Gio.DBusSignalFlags.NONE,
+                    (_connection, _sender, _path, _iface, _signal, parameters) => {
+                        let preparing;
+                        try {
+                            preparing = parameters.deep_unpack()[0];
+                        } catch (e) {
+                            return;
+                        }
+                        _sleeping = Boolean(preparing);
+                        if (!_sleeping)
+                            _resumeNotBefore = _now() + 15000;
+                        _log(_sleeping ?
+                            '系统即将挂起，暂停托盘检查' :
+                            '系统已恢复，等待 D-Bus 稳定后再检查托盘');
+                    });
+            } catch (e) {
+                _sleepSubscription = 0;
+                _log('无法订阅挂起信号，保持普通检查模式: ' + e);
+            }
 
             _log('已启用：每 ' + (CHECK_MS / 1000) + ' 秒检查一次（连续 ' + STRIKES + ' 次确认才清理）');
 
@@ -570,6 +606,14 @@ function init() {
                 GLib.source_remove(_timerId);
                 _timerId = 0;
             }
+            if (_sleepSubscription) {
+                try {
+                    Gio.DBus.system.signal_unsubscribe(_sleepSubscription);
+                } catch (e) { /* system bus may already be gone */ }
+                _sleepSubscription = 0;
+            }
+            _sleeping = false;
+            _resumeNotBefore = 0;
             _restoreHiddenDuplicates();
             _proxy = null;
             _strikes = new Map();

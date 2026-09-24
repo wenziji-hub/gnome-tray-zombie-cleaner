@@ -1,0 +1,67 @@
+--- /usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/statusNotifierWatcher.js
++++ /usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/statusNotifierWatcher.js
+@@ -57,6 +57,7 @@
+             this._acquiredName.bind(this),
+             this._lostName.bind(this));
+         this._items = new Map();
++        this._isDestroyed = false;
+ 
+         try {
+             this._dbusImpl.emit_signal('StatusNotifierHostRegistered', null);
+@@ -114,6 +115,18 @@
+ 
+             // if the desktop is not ready delay the icon creation and signal emissions
+             await Util.waitForStartupCompletion(indicator.cancellable);
++            const current = this._items && this._items.get(id);
++            if (this._isDestroyed || current !== indicator ||
++                !indicator.cancellable || indicator.cancellable.is_cancelled() ||
++                !indicator._proxy) {
++                // Lock-screen transitions can destroy the watcher while the await above
++                // is pending. Do not construct a status icon from the dead proxy.
++                if (current === indicator && indicator.cancellable) {
++                    indicator.destroy();
++                    this._items.delete(id);
++                }
++                return;
++            }
+             const statusIcon = new IndicatorStatusIcon.IndicatorStatusIcon(indicator);
+             indicator.connect('destroy', () => statusIcon.destroy());
+ 
+@@ -139,7 +152,9 @@
+             return;
+         }
+ 
+-        this._registerItem(service, busName, objPath);
++        this._registerItem(service, busName, objPath).catch(() => {
++            // Avoid an unhandled rejection during lock-screen reloads.
++        });
+     }
+ 
+     async _seekStatusNotifierItems() {
+@@ -160,7 +175,9 @@
+                     const id = this._getItemId(name, path);
+                     if (!this._items.has(id)) {
+                         Util.Logger.warn(`Using Brute-force mode for StatusNotifierItem ${id}`);
+-                        this._registerItem(path, name, path);
++                        this._registerItem(path, name, path).catch(() => {
++                            // _registerItem already logs non-cancellation failures.
++                        });
+                     }
+                 }
+             });
+@@ -251,6 +268,8 @@
+     destroy() {
+         if (this._isDestroyed)
+             return;
++        // Mark it before destroying indicators so pending async registrations stop.
++        this._isDestroyed = true;
+ 
+         // this doesn't do any sync operation and doesn't allow us to hook up
+         // the event of being finished which results in our unholy debounce hack
+@@ -273,6 +292,5 @@
+         }
+ 
+         delete this._items;
+-        this._isDestroyed = true;
+     }
+ };
