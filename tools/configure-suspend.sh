@@ -30,7 +30,8 @@ apply_config() {
     sudo install -D -m 0644 "${SOURCE}" "${DROPIN}"
     sudo systemctl restart systemd-logind
     echo "已关闭无指纹设备上的指纹探测。"
-    echo "已将 logind 锁屏延迟上限设为 5 秒并重新加载。"
+    echo "已将 logind 锁屏延迟上限设为 5 秒并重启 logind。"
+    echo "X11 会话可能短暂黑屏；若没有自动恢复，重启 GNOME Shell 即可。"
     echo "此脚本没有修改 s2idle/deep；请单独验证 i915 恢复问题。"
 }
 

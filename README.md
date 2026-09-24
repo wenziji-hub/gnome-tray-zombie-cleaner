@@ -134,6 +134,9 @@ Alder Lake `i915` + NVIDIA 混合显卡的日志可能同时出现三类问题�
 ./tools/patch-appindicators.sh apply
 ```
 
+`configure-suspend.sh` 为了让新值立即生效会重启 `systemd-logind`。X11 会话在这几秒
+内可能短暂黑屏；若没有自动恢复，执行 `./install.sh --restart` 或注销重新登录即可。
+
 应用第二个脚本后，必须重启 X11 下的 GNOME Shell 或注销重新登录：
 
 ```bash
